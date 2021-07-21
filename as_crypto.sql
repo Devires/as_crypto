@@ -4,6 +4,7 @@ is
 MIT License
 
 Copyright (c) 2016-2021 Anton Scheffer
+Copyright (c) 2021 Devires Tech
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -119,6 +120,15 @@ SOFTWARE.
   function verify( src raw
                  , sign raw
                  , pub_key raw
+                 , pubkey_alg binary_integer
+                 , sign_alg binary_integer
+                 )
+  return boolean;
+-- 
+  function verify( src raw
+                 , sign raw
+                 , pub_key_n raw
+                 , pub_key_e raw
                  , pubkey_alg binary_integer
                  , sign_alg binary_integer
                  )
@@ -3444,6 +3454,159 @@ $END
     then
       raise_application_error( -20017, 'PL/SQL function returned an error.' );
     end if;
+    l_mod := mag( l_key_parameters(1) );
+    l_padded := powmod( mag( sign ), mag( l_key_parameters(2) ), l_mod );
+    if sign_alg in ( SIGN_SHA256_RSA_X931
+                   , SIGN_SHA384_RSA_X931
+                   , SIGN_SHA512_RSA_X931
+                   , SIGN_SHA1_RSA_X931
+                   )
+    then
+      if bitand( l_padded(0), 15 ) != 12
+      then
+        l_padded := rsub( l_mod, l_padded );
+      end if;
+      if bitand( l_padded(0), 15 ) != 12
+      then
+        return false;
+      end if;
+      l_decr := demag( l_padded );
+      if utl_raw.substr( l_decr, 1, 2 ) != hextoraw( '6BBB' )
+      then 
+        return false;
+      end if;
+      -- remove X9.31 padding
+      for i in 3 .. utl_raw.length( l_decr )
+      loop
+        l_idx := i;
+        l_tmp := utl_raw.substr( l_decr, i, 1 );
+        exit when l_tmp = 'BA';
+        if l_tmp != hextoraw( 'BB' )
+        then
+          return false;
+        end if;
+      end loop;
+      l_decr := utl_raw.substr( l_decr, l_idx + 1 );
+      l_trailer := utl_raw.substr( l_decr, -2 );
+      l_hash_type := case sign_alg                  
+                       when SIGN_SHA1_RSA_X931   then HASH_SH1
+                       when SIGN_SHA256_RSA_X931 then HASH_SH256
+                       when SIGN_SHA512_RSA_X931 then HASH_SH512
+                       when SIGN_SHA384_RSA_X931 then HASH_SH384
+                     end;
+      l_rv := (  ( sign_alg = SIGN_SHA1_RSA_X931 and l_trailer = c_X931_TRAILER_SH1 )
+              or ( sign_alg = SIGN_SHA512_RSA_X931 and l_trailer = c_X931_TRAILER_SH512 )
+              or ( sign_alg = SIGN_SHA256_RSA_X931 and l_trailer = c_X931_TRAILER_SH256 )
+              or ( sign_alg = SIGN_SHA384_RSA_X931 and l_trailer = c_X931_TRAILER_SH384 )
+              ) and utl_raw.substr( l_decr, 1, utl_raw.length( l_decr ) - 2 ) = hash( src, l_hash_type );
+    else
+      l_decr := demag( l_padded ); 
+      if utl_raw.substr( l_decr, 1, 2 ) != hextoraw( '01FF' )
+      then 
+        return false;
+      end if;
+      -- remove EMSA-PKCS1-v1_5 padding
+      for i in 3 .. utl_raw.length( l_decr )
+      loop
+        l_idx := i;
+        l_tmp := utl_raw.substr( l_decr, i, 1 );
+        exit when l_tmp = '00';
+        if l_tmp != hextoraw( 'FF' )
+        then
+          return false;
+        end if;
+      end loop;
+      l_decr := utl_raw.substr( l_decr, l_idx + 1 );
+      if sign_alg = SIGN_SHA1_RSA
+      then
+        l_hash_type := HASH_SH1;
+        l_idx := utl_raw.length( c_ASN1_SH1 );
+        l_rv := utl_raw.substr( l_decr, 1, l_idx ) = c_ASN1_SH1; 
+      elsif sign_alg = SIGN_SHA512_RSA
+      then
+        l_hash_type := HASH_SH512;
+        l_idx := utl_raw.length( c_ASN1_SH512 );
+        l_rv := utl_raw.substr( l_decr, 1, l_idx ) = c_ASN1_SH512; 
+      elsif sign_alg = SIGN_SHA256_RSA
+      then
+        l_hash_type := HASH_SH256;
+        l_idx := utl_raw.length( c_ASN1_SH256 );
+        l_rv := utl_raw.substr( l_decr, 1, l_idx ) = c_ASN1_SH256; 
+      elsif sign_alg = SIGN_SHA384_RSA
+      then
+        l_hash_type := HASH_SH384;
+        l_idx := utl_raw.length( c_ASN1_SH384 );
+        l_rv := utl_raw.substr( l_decr, 1, l_idx ) = c_ASN1_SH384; 
+      elsif sign_alg = SIGN_SHA224_RSA
+      then
+        l_hash_type := HASH_SH224;
+        l_idx := utl_raw.length( c_ASN1_SH224 );
+        l_rv := utl_raw.substr( l_decr, 1, l_idx ) = c_ASN1_SH224; 
+      end if;
+      l_rv := l_rv and l_idx > 10 and utl_raw.substr( l_decr, l_idx + 1 ) = hash( src, l_hash_type );
+    end if;
+    return l_rv;
+  end;
+  --
+  function verify( src raw
+                 , sign raw
+                 , pub_key_n raw
+                 , pub_key_e raw
+                 , pubkey_alg binary_integer
+                 , sign_alg binary_integer
+                 )
+  return boolean
+  is
+    l_mod tp_mag;
+    l_padded tp_mag;
+    l_tmp raw(1);
+    l_decr raw(3999);
+    l_idx pls_integer;
+    l_hash_type pls_integer;
+    l_key_parameters tp_key_parameters;
+    l_trailer raw(2);
+    l_rv boolean;
+  begin
+    if src is null
+    then
+      raise_application_error( -20010, 'No input buffer provided.' );
+    elsif sign is null
+    then
+      raise_application_error( -20011, 'invalid encryption/decryption/signature state passed' );
+    elsif pub_key_n is null
+    then
+      raise_application_error( -20012, 'no key modulus provided' );
+    elsif pub_key_e is null
+    then
+      raise_application_error( -20012, 'no key exponent provided' );
+    elsif pubkey_alg is null
+    then
+      raise_application_error( -20013, 'PL/SQL function returned an error.' );
+    elsif pubkey_alg != KEY_TYPE_RSA
+    then
+      raise_application_error( -20014, 'invalid cipher type passed' );
+    elsif sign_alg is null
+    then
+      raise_application_error( -20015, 'PL/SQL function returned an error.' );
+    elsif sign_alg not in ( SIGN_SHA224_RSA
+                          , SIGN_SHA256_RSA
+                          , SIGN_SHA256_RSA_X931
+                          , SIGN_SHA384_RSA
+                          , SIGN_SHA384_RSA_X931
+                          , SIGN_SHA512_RSA
+                          , SIGN_SHA512_RSA_X931
+                          , SIGN_SHA1_RSA
+                          , SIGN_SHA1_RSA_X931
+                          )
+    then
+      raise_application_error( -20016, 'invalid cipher type passed' );
+    --elsif not parse_DER_RSA_PUB_key( utl_encode.base64_decode( pub_key ), l_key_parameters )
+    --then
+    --  raise_application_error( -20017, 'PL/SQL function returned an error.' );
+    end if;
+    l_key_parameters.delete;
+    l_key_parameters(1) := pub_key_n; -- n modulus
+    l_key_parameters(2) := pub_key_e; -- e public
     l_mod := mag( l_key_parameters(1) );
     l_padded := powmod( mag( sign ), mag( l_key_parameters(2) ), l_mod );
     if sign_alg in ( SIGN_SHA256_RSA_X931

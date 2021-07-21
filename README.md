@@ -1,27 +1,16 @@
 # as_crypto
 A plsql implementation of some functions/procedures in dbms_crypto
 
-This does include
-* pkencrypt/pkdecrypt public/private key encryption/decryption with the following algorithms
-  - RSA
-* hash and mac function with the following algorithms
-  - MD4
-  - MD5
-  - SH1
-  - SH224
-  - SH256
-  - SH384
-  - SH512
-  - RIPEMD160
-* encrypt/decrypt of raw values with the following algorithms
-  - DES
-  - 3DES_2KEY
-  - 3DES
-  - AES128
-  - AES192
-  - AES256
-  - RC4
+## Improvements over Original Version
+This version adds a new function to verify a token using public key's Modulus and Exponent, useful to work with JWKS endpoints that exposes only "n" and "e" features of the public key, and not provides the PEM format:
 
-**Please note**:
-This package will soon be included in https://github.com/OraOpenSource/oos-utils
-All additions, changes and bugfixes only will be available at that repository.
+```
+  function verify( src raw
+                 , sign raw
+                 , pub_key_n raw
+                 , pub_key_e raw
+                 , pubkey_alg binary_integer
+                 , sign_alg binary_integer
+                 )
+  return boolean;
+```
